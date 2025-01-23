@@ -1,0 +1,17 @@
+# Websocketpp
+(currently work in progress)
+
+
+This is a fairly barebones SDK for incorporating Neuro API into C++ projects using websocketpp.
+
+This is a header-only library but it requires following dependencies:
+
+[nlohmann/json](https://github.com/nlohmann/json) - heder only version can be downloaded from that repo's releases page
+[zaphoyd/websocketpp](https://github.com/zaphoyd/websocketpp) - included as a submodule. This one requires Boost to be installed.
+
+See example project in Test/RockPaperScissors.cpp for an idea of how to use this SDK.
+
+NeuroGameClient is an abstract class that you should extend and override its handleMessage method with your game's logic. handleMessage method will get called every time Neuro sends an action.
+You shouldn't use sendForceAction method directly, instead use forceAction which will block program execution until Neuro responds and prevent race conditions.
+
+TODO: add timeout and connection reset handling
