@@ -74,7 +74,7 @@ int main() {
     nlohmann::json schema;
     nlohmann::json empty_schema;
     schema["type"] = "object";
-    schema["properties"]["hand"] = "string";
+    schema["properties"]["hand"]["type"] = "string";
     NeuroWebsocketpp::Action rock = NeuroWebsocketpp::Action("play_rock", "Play Rock with right or left hand", schema);
     NeuroWebsocketpp::Action paper = NeuroWebsocketpp::Action("play_paper", "Play Paper with right or left hand",
                                                               schema);

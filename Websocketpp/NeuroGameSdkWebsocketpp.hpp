@@ -56,7 +56,7 @@ namespace NeuroWebsocketpp {
         std::string data;
     };
 
-    NeuroResponse::NeuroResponse(const std::string& jsonStr) {
+    inline NeuroResponse::NeuroResponse(const std::string& jsonStr) {
         try {
             if (jsonStr.empty()) {
                 id = "";
@@ -103,8 +103,8 @@ namespace NeuroWebsocketpp {
         }
 
 
-        NeuroGameClient(const std::string& uri, std::string  game_name, std::ostream& output_stream = std::cout, std::ostream& error_stream = std::cerr)
-            : output(output_stream), error(error_stream), game_name(std::move(game_name)), lastResponse("") {
+        NeuroGameClient(const std::string& uri, std::string  game_name, std::ostream& output_stream = std::cout, std::ostream& error_stream = std::cerr, int timeout = -1)
+            : output(output_stream), error(error_stream), game_name(std::move(game_name)), lastResponse(""), timeout(timeout) {
             // Initialize WebSocket++ client
             ws_client.init_asio();
 
@@ -157,9 +157,13 @@ namespace NeuroWebsocketpp {
         // Sends an "Unregister Actions" message to remove actions
         void sendUnregisterActions(const std::vector<std::string>& action_names) {
             nlohmann::json payload;
+            payload["game"] = game_name;
+            payload["command"] = "actions/unregister";
+            nlohmann::json action_names_json;
             for (const auto& action : action_names) {
-                payload.push_back(action);
+                action_names_json.push_back(action);
             }
+            payload["data"]["action_names"] = action_names_json;
             send(payload.dump());
         }
 
@@ -187,11 +191,21 @@ namespace NeuroWebsocketpp {
         }
 
         void forceAction(const std::string& state, const std::string& query, bool ephemeral, const std::vector<std::string>& actions) {
-            std::unique_lock<std::mutex> lock(mutex); // Acquire lock
+            std::unique_lock<std::mutex> lock(mutex);
             forcedActions = actions;
             waitingForForcedAction = true;
             sendForceActions(state, query, ephemeral, actions);
-            condition.wait(lock, [this]() { return !waitingForForcedAction; });
+            if (timeout >= 0)
+            {
+                bool success = condition.wait_for(lock, std::chrono::seconds(timeout), [this]() { return !waitingForForcedAction; });
+                if (!success) {
+                    error << "Timeout waiting for forced action" << std::endl;
+                    throw std::runtime_error("Timeout waiting for forced action");
+                }
+            }
+            else {
+                condition.wait(lock, [this]() { return !waitingForForcedAction; });
+            }
             forcedActions.clear();
         }
 
@@ -203,6 +217,7 @@ namespace NeuroWebsocketpp {
             ws_hdl = std::move(hdl);
             connected = true;
             condition.notify_one();
+
 
         }
 
@@ -265,6 +280,7 @@ namespace NeuroWebsocketpp {
         bool waitingForForcedAction = false;
         bool connected = false;
         std::vector<std::string> forcedActions;
+        int timeout;
     };
 
 }

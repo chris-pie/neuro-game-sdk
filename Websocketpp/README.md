@@ -13,5 +13,4 @@ See example project in Test/RockPaperScissors.cpp for an idea of how to use this
 
 NeuroGameClient is an abstract class that you should extend and override its handleMessage method with your game's logic. handleMessage method will get called every time Neuro sends an action.
 You shouldn't use sendForceAction method directly, instead use forceAction which will block program execution until Neuro responds and prevent race conditions.
-
-TODO: add timeout and connection reset handling
+For timeout, set a value in seconds after which forceAction will throw an error. Set to -1 to wait forever.
