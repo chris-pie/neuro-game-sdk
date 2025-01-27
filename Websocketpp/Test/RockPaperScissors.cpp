@@ -28,19 +28,19 @@ protected:
         if (waitingForForcedAction) {
             if (response.getName() == "play_paper") {
                 std::string resp = "You win!";
-                sendUnregisterActions({"play_rock", "play_paper", "play_scissors"});
+                sendUnregisterActions(disposableActions);
                 sendActionResult(response, true, resp);
                 rps.score2++;
                 waitingForForcedAction = false;
             } else if (response.getName() == "play_scissors") {
                 std::string resp = "You lose!";
-                sendUnregisterActions({"play_rock", "play_paper", "play_scissors"});
+                sendUnregisterActions(disposableActions);
                 sendActionResult(response, true, resp);
                 rps.score1++;
                 waitingForForcedAction = false;
             } else if (response.getName() == "play_rock") {
                 std::string resp = "It's a draw!";
-                sendUnregisterActions({"play_rock", "play_paper", "play_scissors"});
+                sendUnregisterActions(disposableActions);
                 sendActionResult(response, true, resp);
                 waitingForForcedAction = false;
             } else {
@@ -89,12 +89,11 @@ int main() {
 
     while (rps.score1 < rounds && rps.score2 < rounds) {
         client.sendContext("I played Rock", false);
-        client.sendRegisterActions(std::vector<NeuroWebsocketpp::Action>{rock, paper, scissors});
         std::ostringstream state, query;
         state << "I have " << rps.score1 << " points, you have " << rps.score2 << " points. I played Rock.";
         query << "Please play either rock, paper or scissors. Indicate whether you play it with left or right hand.";
-        client.forceAction(state.str(), query.str(), false,
-                           {"play_rock", "play_paper", "play_scissors", "middle_finger"});
+        client.forceDisposableActions(state.str(), query.str(), false,
+                                      std::vector<NeuroWebsocketpp::Action>{rock, paper, scissors});
     }
     client.sendContext("Game over!", false);
 

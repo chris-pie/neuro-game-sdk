@@ -112,9 +112,22 @@ namespace NeuroWebsocketpp {
             ws_client.set_open_handler( [this](connection_hdl && PH1) { on_open(std::forward<decltype(PH1)>(PH1)); });
             ws_client.set_message_handler([this](connection_hdl && PH1, message_ptr && PH2) { on_message(std::forward<decltype(PH1)>(PH1), std::forward<decltype(PH2)>(PH2)); });
             ws_client.set_close_handler([this](connection_hdl && PH1) { on_close(std::forward<decltype(PH1)>(PH1)); });
+            ws_client.set_fail_handler([this](connection_hdl && PH1) { on_fail(std::forward<decltype(PH1)>(PH1)); });
             std::unique_lock<std::mutex> lock(mutex); // Acquire lock
             connection_thread = std::thread(&NeuroGameClient::connect, this, uri);
-            condition.wait(lock, [this]() { return connected; }); // Wait until connected
+            if (timeout >= 0) {
+                bool success = condition.wait_for(lock, std::chrono::seconds(timeout), [this]() { return connected || connection_failed; });
+                if (!success || connection_failed) {
+                    error << "Failed to connect to server" << std::endl;
+                    throw std::runtime_error("Failed to connect to server");
+                }
+            } else {
+                condition.wait(lock, [this]() { return connected || connection_failed; });
+                if (connection_failed) {
+                    error << "Failed to connect to server" << std::endl;
+                    throw std::runtime_error("Failed to connect to server");
+                }
+            }
 
         }
 
@@ -197,17 +210,41 @@ namespace NeuroWebsocketpp {
             sendForceActions(state, query, ephemeral, actions);
             if (timeout >= 0)
             {
-                bool success = condition.wait_for(lock, std::chrono::seconds(timeout), [this]() { return !waitingForForcedAction; });
-                if (!success) {
-                    error << "Timeout waiting for forced action" << std::endl;
-                    throw std::runtime_error("Timeout waiting for forced action");
+                bool success = condition.wait_for(lock, std::chrono::seconds(timeout), [this]() { return !waitingForForcedAction || connection_failed; });
+                if (!success || connection_failed) {
+                    error << "Error waiting for forced action" << std::endl;
+                    throw std::runtime_error("Error waiting for forced action");
                 }
             }
             else {
-                condition.wait(lock, [this]() { return !waitingForForcedAction; });
+                condition.wait(lock, [this]() { return !waitingForForcedAction || connection_failed; });
+                if (connection_failed) {
+                    error << "Error waiting for forced action" << std::endl;
+                    throw std::runtime_error("Error waiting for forced action");
+                }
             }
             forcedActions.clear();
         }
+    //Helper function that registers actions, sends force action request for them, then stores sent actions in disposableActions field
+    //so that they can't be unregistered in handleMessage method. If forceUnregister is true, it will unregister them just before exiting
+    //as a failsafe, but this shouldn't be relied on - unregister should happen in handleMessage before sending action result.
+    void forceDisposableActions(const std::string& state, const std::string& query, bool ephemeral, const std::vector<Action>& actions, bool forceUnregister = false) {
+            sendRegisterActions(actions);
+            disposableActions = getActionNamesFromActions(actions);
+            forceAction(state, query, ephemeral, getActionNamesFromActions(actions));
+            if (forceUnregister) {
+                sendUnregisterActions(disposableActions);
+            }
+
+        }
+
+    static std::vector<std::string> getActionNamesFromActions(const std::vector<Action>& actions) {
+        std::vector<std::string> actionNames;
+        for (const auto& action : actions) {
+            actionNames.push_back(action.getName());
+        }
+        return actionNames;
+    }
 
 
 
@@ -244,14 +281,28 @@ namespace NeuroWebsocketpp {
         }
         void on_close(const connection_hdl&) {
             output << "Connection closed." << std::endl;
+            connection_failed = true;
+            condition.notify_all();
+        }
+
+        void on_fail(connection_hdl hdl) {
+            std::lock_guard<std::mutex> lock(mutex);
+            connection_failed = true;
+            condition.notify_all();
+            error << "Connection failed!" << std::endl;
         }
 
         void send(const std::string& message) {
+            if (connection_failed) {
+                error << "Trying to send message on a failed connection" << std::endl;
+                throw std::runtime_error("Trying to send message on a failed connection");
+            }
             websocketpp::lib::error_code ec;
             ws_client.send(ws_hdl, message, websocketpp::frame::opcode::text, ec);
 
             if (ec) {
                 error << "Error sending message: " << ec.message() << std::endl;
+                throw std::runtime_error("Error sending message");
             }
         }
 
@@ -275,12 +326,14 @@ namespace NeuroWebsocketpp {
         std::string game_name;
         std::thread connection_thread;
         std::mutex mutex;
-        std::condition_variable condition; // Condition variable for waiting and notifying
-        NeuroResponse lastResponse; // Response from Neuro
+        std::condition_variable condition;
+        NeuroResponse lastResponse;
         bool waitingForForcedAction = false;
         bool connected = false;
         std::vector<std::string> forcedActions;
         int timeout;
+        bool connection_failed = false;
+        std::vector<std::string> disposableActions;
     };
 
 }
