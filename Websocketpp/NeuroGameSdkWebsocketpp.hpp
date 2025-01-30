@@ -103,9 +103,11 @@ namespace NeuroWebsocketpp {
         }
 
 
-        NeuroGameClient(const std::string& uri, std::string  game_name, std::ostream& output_stream = std::cout, std::ostream& error_stream = std::cerr, int timeout = -1)
-            : output(output_stream), error(error_stream), game_name(std::move(game_name)), lastResponse(""), timeout(timeout) {
+        NeuroGameClient(const std::string& uri, std::string  game_name, std::ostream* output_stream = &std::cout, std::ostream* error_stream = &std::cerr, int timeout = -1)
+            : game_name(std::move(game_name)), lastResponse(""), timeout(timeout) {
             // Initialize WebSocket++ client
+            output = output_stream;
+            error = error_stream;
             ws_client.init_asio();
 
             // Set message and open handlers
@@ -118,13 +120,13 @@ namespace NeuroWebsocketpp {
             if (timeout >= 0) {
                 bool success = condition.wait_for(lock, std::chrono::seconds(timeout), [this]() { return connected || connection_failed; });
                 if (!success || connection_failed) {
-                    error << "Failed to connect to server" << std::endl;
+                    *error << "Failed to connect to server" << std::endl;
                     throw std::runtime_error("Failed to connect to server");
                 }
             } else {
                 condition.wait(lock, [this]() { return connected || connection_failed; });
                 if (connection_failed) {
-                    error << "Failed to connect to server" << std::endl;
+                    *error << "Failed to connect to server" << std::endl;
                     throw std::runtime_error("Failed to connect to server");
                 }
             }
@@ -212,14 +214,14 @@ namespace NeuroWebsocketpp {
             {
                 bool success = condition.wait_for(lock, std::chrono::seconds(timeout), [this]() { return !waitingForForcedAction || connection_failed; });
                 if (!success || connection_failed) {
-                    error << "Error waiting for forced action" << std::endl;
+                    *error << "Error waiting for forced action" << std::endl;
                     throw std::runtime_error("Error waiting for forced action");
                 }
             }
             else {
                 condition.wait(lock, [this]() { return !waitingForForcedAction || connection_failed; });
                 if (connection_failed) {
-                    error << "Error waiting for forced action" << std::endl;
+                    *error << "Error waiting for forced action" << std::endl;
                     throw std::runtime_error("Error waiting for forced action");
                 }
             }
@@ -250,7 +252,7 @@ namespace NeuroWebsocketpp {
 
     protected:
         void on_open(connection_hdl hdl) {
-            output << "Connection established!" << std::endl;
+            *output << "Connection established!" << std::endl;
             ws_hdl = std::move(hdl);
             connected = true;
             condition.notify_one();
@@ -280,7 +282,7 @@ namespace NeuroWebsocketpp {
             condition.notify_one();
         }
         void on_close(const connection_hdl&) {
-            output << "Connection closed." << std::endl;
+            *output << "Connection closed." << std::endl;
             connection_failed = true;
             condition.notify_all();
         }
@@ -289,19 +291,19 @@ namespace NeuroWebsocketpp {
             std::lock_guard<std::mutex> lock(mutex);
             connection_failed = true;
             condition.notify_all();
-            error << "Connection failed!" << std::endl;
+            *error << "Connection failed!" << std::endl;
         }
 
         void send(const std::string& message) {
             if (connection_failed) {
-                error << "Trying to send message on a failed connection" << std::endl;
+                *error << "Trying to send message on a failed connection" << std::endl;
                 throw std::runtime_error("Trying to send message on a failed connection");
             }
             websocketpp::lib::error_code ec;
             ws_client.send(ws_hdl, message, websocketpp::frame::opcode::text, ec);
 
             if (ec) {
-                error << "Error sending message: " << ec.message() << std::endl;
+                *error << "Error sending message: " << ec.message() << std::endl;
                 throw std::runtime_error("Error sending message");
             }
         }
@@ -311,7 +313,7 @@ namespace NeuroWebsocketpp {
             auto con = ws_client.get_connection(uri, ec);
 
             if (ec) {
-                error << "Error creating connection: " << ec.message() << std::endl;
+                *error << "Error creating connection: " << ec.message() << std::endl;
                 return;
             }
 
@@ -321,8 +323,8 @@ namespace NeuroWebsocketpp {
 
         client ws_client;
         connection_hdl ws_hdl;
-        std::ostream& output;
-        std::ostream& error;
+        std::ostream* output;
+        std::ostream* error;
         std::string game_name;
         std::thread connection_thread;
         std::mutex mutex;

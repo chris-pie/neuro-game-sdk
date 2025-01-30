@@ -1,8 +1,5 @@
 
 #include "../NeuroGameSdkWebsocketpp.hpp"
-
-#include <condition_variable> // Include for synchronization
-#include <mutex>
 #include <string>
 
 
@@ -18,8 +15,8 @@ class NeuroRPS : public NeuroWebsocketpp::NeuroGameClient {
     NeuroRPS &operator=(const NeuroRPS &) = delete;
 
 public:
-    NeuroRPS(const std::string &uri, const std::string &game_name, RPS &rps, std::ostream &output_stream = std::cout,
-             std::ostream &error_stream = std::cerr)
+    NeuroRPS(const std::string &uri, const std::string &game_name, RPS &rps, std::ostream* output_stream = &std::cout,
+             std::ostream* error_stream = &std::cerr)
         : NeuroGameClient(uri, game_name, output_stream, error_stream), rps(rps) {
     }
 
@@ -69,7 +66,7 @@ protected:
 int main() {
     RPS rps{};
 
-    NeuroRPS client("ws://localhost:8000", "Rock Paper Scissors", rps, std::cout, std::cerr);
+    NeuroRPS client("ws://localhost:8000", "Rock Paper Scissors", rps, &std::cout, &std::cerr);
     int rounds = 50;
     nlohmann::json schema;
     nlohmann::json empty_schema;
