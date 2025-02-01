@@ -6,13 +6,15 @@
 #include "websocketpp/client.hpp"
 #include <iostream>
 #include <string>
+#include <thread>
+
 #include "json.hpp"
 
 namespace NeuroWebsocketpp {
     class Action {
     public:
         // Constructor
-        Action(std::string  name, std::string  description, nlohmann::json& schema)
+        Action(std::string  name, std::string  description, const nlohmann::json& schema)
             : name(std::move(name)), description(std::move(description)), schema(schema) {}
 
         std::string getName() const {
@@ -65,10 +67,8 @@ namespace NeuroWebsocketpp {
                 command = "";
                 return;
             }
-            // Parse the input JSON string into a JSON object
             nlohmann::json parsedJson = nlohmann::json::parse(jsonStr);
 
-            // Extract the mandatory "command" field
             if (parsedJson.contains("command") && parsedJson["command"].is_string()) {
                 command = parsedJson["command"];
             } else {
@@ -103,20 +103,23 @@ namespace NeuroWebsocketpp {
         }
 
 
-        NeuroGameClient(const std::string& uri, std::string  game_name, std::ostream* output_stream = &std::cout, std::ostream* error_stream = &std::cerr, int timeout = -1)
-            : game_name(std::move(game_name)), lastResponse(""), timeout(timeout) {
-            // Initialize WebSocket++ client
+        NeuroGameClient(const std::string& uri, std::string  game_name, std::ostream* output_stream = &std::cout, std::ostream* error_stream = &std::cerr, int timeout = -1, bool retry_on_fail = true)
+            : game_name(std::move(game_name)), lastResponse(""), timeout(timeout), uri(uri), retry_on_fail(retry_on_fail) {
             output = output_stream;
             error = error_stream;
             ws_client.init_asio();
-
-            // Set message and open handlers
             ws_client.set_open_handler( [this](connection_hdl && PH1) { on_open(std::forward<decltype(PH1)>(PH1)); });
             ws_client.set_message_handler([this](connection_hdl && PH1, message_ptr && PH2) { on_message(std::forward<decltype(PH1)>(PH1), std::forward<decltype(PH2)>(PH2)); });
             ws_client.set_close_handler([this](connection_hdl && PH1) { on_close(std::forward<decltype(PH1)>(PH1)); });
             ws_client.set_fail_handler([this](connection_hdl && PH1) { on_fail(std::forward<decltype(PH1)>(PH1)); });
-            std::unique_lock<std::mutex> lock(mutex); // Acquire lock
-            connection_thread = std::thread(&NeuroGameClient::connect, this, uri);
+            reconnect();
+
+        }
+
+        void reconnect() {
+            std::unique_lock<std::mutex> lock(reconnectMutex);
+            std::this_thread::sleep_for(std::chrono::seconds(3));
+            connection_thread = std::thread(&NeuroGameClient::connect, this, uri.empty()? std::getenv("NEURO_SDK_WS_URL") : uri);
             if (timeout >= 0) {
                 bool success = condition.wait_for(lock, std::chrono::seconds(timeout), [this]() { return connected || connection_failed; });
                 if (!success || connection_failed) {
@@ -130,10 +133,18 @@ namespace NeuroWebsocketpp {
                     throw std::runtime_error("Failed to connect to server");
                 }
             }
+            while (!messageQueue.empty()) {
+                std::string msg = messageQueue.front();
+                messageQueue.pop();
+                websocketpp::lib::error_code ec;
+                ws_client.send(ws_hdl, msg, websocketpp::frame::opcode::text, ec);
+                if (ec) {
+                    *error << "Error sending stored message after reconnect: " << ec.message() << std::endl;
+                    throw std::runtime_error("Error sending stored message after reconnect");
+                }
+            }
 
         }
-
-        // Sends a "Startup" message to notify that the game has started
         void sendStartup() {
             nlohmann::json payload;
             payload["game"] = game_name;
@@ -141,7 +152,6 @@ namespace NeuroWebsocketpp {
             send(payload.dump());
         }
 
-        // Sends a "Context" message to notify Neuro about in-game events
         void sendContext(const std::string& context_message, bool silent) {
             nlohmann::json payload;
             payload["game"] = game_name;
@@ -152,7 +162,6 @@ namespace NeuroWebsocketpp {
             send(payload.dump());
         }
 
-        // Sends a "Register Actions" message to register actions with Neuro
         void sendRegisterActions(const std::vector<Action>& actions) {
             nlohmann::json payload;
             payload["game"] = game_name;
@@ -169,7 +178,6 @@ namespace NeuroWebsocketpp {
 
         }
 
-        // Sends an "Unregister Actions" message to remove actions
         void sendUnregisterActions(const std::vector<std::string>& action_names) {
             nlohmann::json payload;
             payload["game"] = game_name;
@@ -182,7 +190,6 @@ namespace NeuroWebsocketpp {
             send(payload.dump());
         }
 
-        // Sends a "Force Actions" message to force Neuro to execute certain actions
         void sendForceActions(const std::string& state, const std::string& query, bool ephemeral, const std::vector<std::string>& actions) {
             nlohmann::json payload;
             payload["command"] = "actions/force";
@@ -194,8 +201,7 @@ namespace NeuroWebsocketpp {
             send(payload.dump());
         }
 
-        // Sends an "Action Result" message to report the result of an action execution
-        void sendActionResult(const NeuroResponse& neuroAction, bool success, std::string& message) {
+        void sendActionResult(const NeuroResponse& neuroAction, bool success, const std::string& message) {
             nlohmann::json payload;
             payload["command"] = "action/result";
             payload["game"] = game_name;
@@ -269,7 +275,7 @@ namespace NeuroWebsocketpp {
 
         virtual void on_message(const connection_hdl&, const client::message_ptr& msg) {
             {
-                std::lock_guard<std::mutex> lock(mutex); // Ensure thread safety
+                std::lock_guard<std::mutex> lock(mutex);
                 auto message = msg->get_payload();
                 auto JsonMessage = nlohmann::json::parse(message);
                 if (JsonMessage["command"] == "actions/reregister_all")
@@ -282,34 +288,55 @@ namespace NeuroWebsocketpp {
             condition.notify_one();
         }
         void on_close(const connection_hdl&) {
-            *output << "Connection closed." << std::endl;
-            connection_failed = true;
+            connected = false;
+            *output << "Connection closed. Reconnecting..." << std::endl;
+            reconnect();
             condition.notify_all();
         }
 
-        void on_fail(connection_hdl hdl) {
+        void on_fail(const connection_hdl&) {
             std::lock_guard<std::mutex> lock(mutex);
-            connection_failed = true;
-            condition.notify_all();
             *error << "Connection failed!" << std::endl;
+
+            //If we don't retry on fail this flag will cause exceptions to be thrown if we're waiting for a forced action.
+            //Otherwise we just keep waiting until we reconnect.
+            if (!retry_on_fail) {
+                connection_failed = true;
+                condition.notify_all();
+            }
+            else {
+                reconnect();
+            }
+
+
         }
 
         void send(const std::string& message) {
+            std::lock_guard<std::mutex> lock(reconnectMutex);
             if (connection_failed) {
                 *error << "Trying to send message on a failed connection" << std::endl;
                 throw std::runtime_error("Trying to send message on a failed connection");
             }
-            websocketpp::lib::error_code ec;
-            ws_client.send(ws_hdl, message, websocketpp::frame::opcode::text, ec);
-
-            if (ec) {
-                *error << "Error sending message: " << ec.message() << std::endl;
-                throw std::runtime_error("Error sending message");
+            if (!connected) {
+                std::cerr << "Connection closed. Storing message in queue." << std::endl;
+                messageQueue.push(message);
             }
+            else {
+                websocketpp::lib::error_code ec;
+                ws_client.send(ws_hdl, message, websocketpp::frame::opcode::text, ec);
+                if (ec) {
+                    *error << "Error sending message: " << ec.message() << " Storing message in queue." << std::endl;
+                    messageQueue.push(message);
+                }
+
+            }
+
+
         }
 
         void connect(const std::string& uri) {
             websocketpp::lib::error_code ec;
+            connection_failed = false;
             auto con = ws_client.get_connection(uri, ec);
 
             if (ec) {
@@ -328,6 +355,7 @@ namespace NeuroWebsocketpp {
         std::string game_name;
         std::thread connection_thread;
         std::mutex mutex;
+        std::mutex reconnectMutex;
         std::condition_variable condition;
         NeuroResponse lastResponse;
         bool waitingForForcedAction = false;
@@ -336,6 +364,9 @@ namespace NeuroWebsocketpp {
         int timeout;
         bool connection_failed = false;
         std::vector<std::string> disposableActions;
+        std::string uri;
+        std::queue<std::string> messageQueue;
+        bool retry_on_fail;
     };
 
 }
