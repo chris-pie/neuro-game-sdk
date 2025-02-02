@@ -97,8 +97,20 @@ namespace NeuroWebsocketpp {
     class NeuroGameClient {
     public:
         virtual ~NeuroGameClient() {
+            shutting_down = true;
+            if (connected) {
+                websocketpp::lib::error_code ec;
+                ws_client.close(ws_hdl, websocketpp::close::status::going_away, "Shutting down", ec);
+                if (ec) {
+                    *error << "Error closing WebSocket connection: " << ec.message() << std::endl;
+                }
+                ws_client.stop();
+            }
             if (connection_thread.joinable()) {
                 connection_thread.join();
+            }
+            if (reconnect_thread.joinable()) {
+                reconnect_thread.join();
             }
         }
 
@@ -112,26 +124,40 @@ namespace NeuroWebsocketpp {
             ws_client.set_message_handler([this](connection_hdl && PH1, message_ptr && PH2) { on_message(std::forward<decltype(PH1)>(PH1), std::forward<decltype(PH2)>(PH2)); });
             ws_client.set_close_handler([this](connection_hdl && PH1) { on_close(std::forward<decltype(PH1)>(PH1)); });
             ws_client.set_fail_handler([this](connection_hdl && PH1) { on_fail(std::forward<decltype(PH1)>(PH1)); });
-            reconnect();
-
+            reconnect_thread = std::thread(&NeuroGameClient::_connect, this);
         }
 
         void reconnect() {
-            std::unique_lock<std::mutex> lock(reconnectMutex);
             std::this_thread::sleep_for(std::chrono::seconds(3));
+            _connect();
+        }
+
+        void _connect() {
+            std::unique_lock<std::mutex> lock(reconnectMutex);
+            if (connection_thread.joinable()) {
+                connection_thread.join();
+            }
+            if (shutting_down) {
+              return;
+            }
             connection_thread = std::thread(&NeuroGameClient::connect, this, uri.empty()? std::getenv("NEURO_SDK_WS_URL") : uri);
             if (timeout >= 0) {
-                bool success = condition.wait_for(lock, std::chrono::seconds(timeout), [this]() { return connected || connection_failed; });
+                bool success = condition.wait_for(lock, std::chrono::seconds(timeout), [this]() { return connected || connection_failed || _failed_reconnecting; });
                 if (!success || connection_failed) {
                     *error << "Failed to connect to server" << std::endl;
                     throw std::runtime_error("Failed to connect to server");
                 }
             } else {
-                condition.wait(lock, [this]() { return connected || connection_failed; });
+                condition.wait(lock, [this]() { return connected || connection_failed  || _failed_reconnecting; });
                 if (connection_failed) {
                     *error << "Failed to connect to server" << std::endl;
-                    throw std::runtime_error("Failed to connect to server");
+                    if (!retry_on_fail) {
+                        throw std::runtime_error("Failed to connect to server");
+                    }
                 }
+            }
+            if (connection_failed || _failed_reconnecting) {
+              return;
             }
             while (!messageQueue.empty()) {
                 std::string msg = messageQueue.front();
@@ -143,12 +169,17 @@ namespace NeuroWebsocketpp {
                     throw std::runtime_error("Error sending stored message after reconnect");
                 }
             }
-
         }
         void sendStartup() {
             nlohmann::json payload;
             payload["game"] = game_name;
             payload["command"] = "startup";
+            //Block until connection is established for startup.
+            std::unique_lock<std::mutex> lock(reconnectMutex);
+            if (!(connected ||  shutting_down)) {
+              condition.wait(lock, [this]() { return connected ||  shutting_down; });
+            }
+            lock.unlock();
             send(payload.dump());
         }
 
@@ -158,7 +189,6 @@ namespace NeuroWebsocketpp {
             payload["command"] = "context";
             payload["data"]["message"] = context_message;
             payload["data"]["silent"] = silent;
-
             send(payload.dump());
         }
 
@@ -218,14 +248,14 @@ namespace NeuroWebsocketpp {
             sendForceActions(state, query, ephemeral, actions);
             if (timeout >= 0)
             {
-                bool success = condition.wait_for(lock, std::chrono::seconds(timeout), [this]() { return !waitingForForcedAction || connection_failed; });
+                bool success = condition.wait_for(lock, std::chrono::seconds(timeout), [this]() { return !waitingForForcedAction || connection_failed || shutting_down; });
                 if (!success || connection_failed) {
                     *error << "Error waiting for forced action" << std::endl;
                     throw std::runtime_error("Error waiting for forced action");
                 }
             }
             else {
-                condition.wait(lock, [this]() { return !waitingForForcedAction || connection_failed; });
+                condition.wait(lock, [this]() { return !waitingForForcedAction || connection_failed || shutting_down; });
                 if (connection_failed) {
                     *error << "Error waiting for forced action" << std::endl;
                     throw std::runtime_error("Error waiting for forced action");
@@ -290,8 +320,12 @@ namespace NeuroWebsocketpp {
         void on_close(const connection_hdl&) {
             connected = false;
             *output << "Connection closed. Reconnecting..." << std::endl;
-            reconnect();
-            condition.notify_all();
+            _failed_reconnecting = true;
+            condition.notify_one();
+            if (reconnect_thread.joinable()) {
+              reconnect_thread.join();
+            }
+            reconnect_thread = std::thread(&NeuroGameClient::reconnect, this);
         }
 
         void on_fail(const connection_hdl&) {
@@ -305,10 +339,13 @@ namespace NeuroWebsocketpp {
                 condition.notify_all();
             }
             else {
-                reconnect();
+                _failed_reconnecting = true;
+                condition.notify_one();
+                if (reconnect_thread.joinable()) {
+                    reconnect_thread.join();
+                }
+                reconnect_thread = std::thread(&NeuroGameClient::reconnect, this);
             }
-
-
         }
 
         void send(const std::string& message) {
@@ -354,6 +391,7 @@ namespace NeuroWebsocketpp {
         std::ostream* error;
         std::string game_name;
         std::thread connection_thread;
+        std::thread reconnect_thread;
         std::mutex mutex;
         std::mutex reconnectMutex;
         std::condition_variable condition;
@@ -367,6 +405,8 @@ namespace NeuroWebsocketpp {
         std::string uri;
         std::queue<std::string> messageQueue;
         bool retry_on_fail;
+        bool _failed_reconnecting;
+        bool shutting_down = false;
     };
 
 }
