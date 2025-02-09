@@ -32,6 +32,7 @@ Third-party SDKs created and maintained by the community.
 - [Java SDK](https://github.com/alexcrea/jacn-sdk)
 - [Lua SDK](https://github.com/Gunoshozo/lua-neuro-sama-game-api)
 - [Gamemaker SDK](https://github.com/noellepunk/Neuro-Gamemaker-SDK)
+- [C SDK](https://github.com/xslendix/libneurosdk)
 
 ### Tools
 - [Tony](https://github.com/Pasu4/neuro-api-tony) is a graphical testing interface, similar to Randy, but it allows the user to write messages manually.

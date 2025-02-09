@@ -12,7 +12,7 @@ Last update: 7th of January 2025, 12:20 GMT
 - Fixed an issue in the Unity SDK which caused infinite task multiplication if the websocket client could not connect to the server ([#29](https://github.com/VedalAI/neuro-game-sdk/issues/29)). Please update as soon as possible to version `1.1.6`.
 
 ## 22nd of December 2024, 22:00 GMT
-- The Godot SDK has been published to the [Godot Asset Library](https://godotengine.org/asset-library/asset/14968).
+- The Godot SDK has been published to the [Godot Asset Library](https://godotengine.org/asset-library/asset/3576).
 
 ## 22nd of December 2024, 05:00 GMT
 - The Unity SDK can now be used for modding Unity games built in Mono. Documentation can be found [here](https://github.com/VedalAI/neuro-game-sdk/tree/bb05509/Unity#for-modding).
